@@ -18,6 +18,13 @@ void timerRun(struct mTimer* timer){
   }
 }
 
+void timerRunCyclic(struct mTimer* timer){
+  if(millis() > timer->nextInvoke && timer->nextInvoke != 0){
+    timer->timerCallback();
+    timer->nextInvoke = millis() + timer->delayMs;
+  }
+}
+
 void timerForceStop(struct mTimer* timer){
   timer->nextInvoke = 0;
 }

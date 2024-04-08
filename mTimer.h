@@ -23,6 +23,11 @@ void timerStart(struct mTimer*, unsigned int);
 void timerRun(struct mTimer*);
 
 /**
+* Checks if timer has finished and calls timerCallback if it is. Sets nextinvoke to timer delay if finished.
+*/
+void timerRunCyclic(struct mTimer*);
+
+/**
 * Forcefully stop timer sets nextInvoke back to 0.
 */
 void timerForceStop(struct mTimer*);

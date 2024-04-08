@@ -1,37 +1,61 @@
+#include <math.h>
 #include "mTimer.h"
+#include "mDisplay.h"
 
 /**
+* Thermistor details
 * 10k ohm thermistor @ 25C
 * B: 3977K ± 1%
+* min...max, -40C...+105C
 */
 
+#define TEMP_SMOOTHING 64
 
 /* Setup pins */
-unsigned int doorInputPIN = 2; // door input from reed relay.
-unsigned int doorLedPIN = 3; // door open close led pin
-unsigned int buzzerPIN = 4;// buzzer pin
+unsigned int doorLedPIN = 11; // door open close led pin
+unsigned int doorInputPIN = 12; // door input from reed relay.
+unsigned int buzzerPIN = 10;// buzzer pin
 unsigned int thermistorPIN = A0; // Thermistor analog pin
 
 /* Other variable setup */
 bool doorOpenedFirstTime = true; // state if door was closed between input changes.
 unsigned int doorState = 0; // door state (open/close)
 struct mTimer doorOpenTimer = {}; // door open-buzzer timer
+struct mTimer displayTimer = {}; // Timer for wirting new info to display.
 float calculatedCelcius = 0; // calculated celcius
+float celciusHistory[TEMP_SMOOTHING] = {0}; // Track last TEMP_SMOOTHING reads.
+int celciusHistoryIterator = 0; // celcius history iterator.
+mdpCharacter displayStatus = MDPNAN;
+int buzzing = 0;
 
 /* forward decs */
 /* Run door operations. */
 void doorOperation();
+
 /* read temperature. */
 float tempRead();
 
+/** Check thermistor calculation results. Returns non 0 value if value is not usable.*/
+mdpCharacter checkTemperatureResult();
+
+/** Calculates temperature from celcius history. */
+float calculateTemperature();
+
 // doorOpenTimer timer finished callback.
 void onDoorOpenTimerFinished(){
-  // do some buzzing with buzzer.
-  for(int i = 0; i < 80; i++){
+  if(buzzing == 1){
     digitalWrite(buzzerPIN, HIGH);
-    digitalWrite(buzzerPIN, LOW);
-    delay(1);
+    buzzing = 0;
+    return;
   }
+  buzzing = 1;
+  digitalWrite(buzzerPIN, LOW);
+}
+
+// displayTimer timer finished callback.
+void onDisplayTimerFinished(){
+  Serial.println("New value to display");
+  mdpDraw(displayStatus);
 }
 
 void setup() {
@@ -42,18 +66,48 @@ void setup() {
   pinMode(doorLedPIN, OUTPUT);
   pinMode(buzzerPIN, OUTPUT);
 
+  mdpSetupDisplayPins();
+
   // initialize door timer struct values
-  doorOpenTimer.delayMs = 1500;
+  doorOpenTimer.delayMs = 500;
   doorOpenTimer.nextInvoke = 0;
   doorOpenTimer.timerCallback = &onDoorOpenTimerFinished;
+
+  // initialize display timer values
+  displayTimer.delayMs = 20000;
+  displayTimer.nextInvoke = 20000;
+  displayTimer.timerCallback = &onDisplayTimerFinished;
 }
 
 void loop() {
-  doorOperation();
-  calculatedCelcius = tempRead();
-  Serial.println(calculatedCelcius);
-}
 
+  // Door operation
+  doorOperation();
+
+  // Temperature stuff
+  calculatedCelcius = tempRead();
+  mdpCharacter status = checkTemperatureResult();
+
+  // Can read temps to history
+  if(status == MDPOK){
+    celciusHistory[celciusHistoryIterator] = calculatedCelcius;
+    if(celciusHistoryIterator + 1 < TEMP_SMOOTHING){
+      celciusHistoryIterator++;
+    }else{
+      calculatedCelcius = calculateTemperature();
+      celciusHistoryIterator = 0;
+      displayStatus = mdpIntToDisplayCharacter((int) calculatedCelcius);
+    }
+  }else{
+    // Reading is outside of the range. React immediatly.
+    displayStatus = status;
+    mdpDraw(displayStatus);
+  }
+
+  // Run display timer endlesly
+  timerRunCyclic(&displayTimer);
+  
+}
 
 void doorOperation(){
   // read doorState
@@ -62,16 +116,17 @@ void doorOperation(){
   // Handle door open/close detection
   if(doorState == HIGH){
     // Door is closed
-    digitalWrite(doorLedPIN, HIGH);
+    digitalWrite(doorLedPIN, HIGH);    
     timerForceStop(&doorOpenTimer);
     doorOpenedFirstTime = true;
+    digitalWrite(buzzerPIN, LOW);
   }else{ 
     // Door is open
     digitalWrite(doorLedPIN, LOW);
     if(doorOpenedFirstTime){
       // Use longer delay if door was not previously open, 
       // buzzer does not immediatly start screaming.
-      timerStart(&doorOpenTimer, 10000);
+      timerStart(&doorOpenTimer, 15000);
       doorOpenedFirstTime = false;
     }else{
       // Use timer interval value
@@ -105,4 +160,33 @@ float tempRead(){
   celcius -= 273.15;
 
   return celcius;
+}
+
+mdpCharacter checkTemperatureResult(){
+  // range check inclusive 0...9
+  if(calculatedCelcius >= 0 && calculatedCelcius <= 9){
+    return MDPOK;
+  }
+
+  // range check exclusive -10...0
+  if(calculatedCelcius < 0 && calculatedCelcius > -10){
+    return MDPLOW;
+  }
+
+  // Range check exclusive 9...50
+  if(calculatedCelcius > 9 && calculatedCelcius < 50){
+    return MDPHIGH;
+  }
+
+  return MDPNAN;
+}
+
+float calculateTemperature(){
+  // Calculate average of history temps.
+  float sum = 0;
+  for(int i = 0; i <= celciusHistoryIterator; i++){
+    sum += celciusHistory[i];
+  }
+
+  return roundf(sum / celciusHistoryIterator);
 }
